@@ -1,11 +1,12 @@
+#!/usr/bin/env python
+
 import threading
 from queue import Queue
 import requests
 import time
 from typing import List, Tuple
 
-NUM_THREADS = 4
-ENDPOINT_URL = "http://example.com/submit"
+ENDPOINT_URL = "https://web.archive.org/save"
 
 class URLSubmitter:
     """
@@ -29,6 +30,10 @@ class URLSubmitter:
         for credential in credentials:
             self.credentials_queue.put(credential)
         self.url_queue = Queue()
+        # Create a session for each credential
+        self.sessions = {}
+        for credential in credentials:
+            self.sessions[credential] = requests.Session()
 
     def _submit_url(self, url: str) -> None:
         """
@@ -42,9 +47,22 @@ class URLSubmitter:
         except:  # If queue is empty, wait for an item
             credential = self.credentials_queue.get()
         try:
-            response = requests.post(self.post_endpoint, auth=credential)
+            # Update the headers and data for the POST request
+            auth_header = f"LOW {credential[0]}:{credential[1]}"
+            headers = {
+                "Accept": "application/json",
+                "Authorization": auth_header
+            }
+            data = f"url={url}"
+            
+            session = self.sessions[credential]
+            response = session.post(self.post_endpoint, headers=headers, data=data)
             response.raise_for_status()  # Raise an exception for HTTP errors
             print(f"Success: {url}, Status Code: {response.status_code}, Response: {response.text}")
+        except requests.exceptions.ConnectionError:
+            print(f"Failure: {url}, Error: Connection refused")
+            self.url_queue.put(url)  # Requeue the URL
+            time.sleep(20)  # Pause for 20 seconds before next attempt
         except requests.exceptions.RequestException as e:
             print(f"Failure: {url}, Error: {e}")
             self.url_queue.put(url)  # Requeue the URL
@@ -64,18 +82,18 @@ class URLSubmitter:
             self._submit_url(url)
             self.url_queue.task_done()
 
-    def start_submission(self, urls: List[str]) -> None:
+    def start_submission(self, num_threads: int, urls: List[str]) -> None:
         """
         Starts the submission process.
 
         Args:
+            num_threads (int): The number of threads to use for simultaneous submission.
             urls (List[str]): A list of URLs to submit.
         """
         for url in urls:
             self.url_queue.put(url)
 
         threads = []
-        num_threads = 4
         for _ in range(num_threads):
             thread = threading.Thread(target=self._worker)
             threads.append(thread)
@@ -113,15 +131,12 @@ def read_urls_from_file(filename: str) -> List[str]:
 if __name__ == "__main__":
     post_endpoint = ENDPOINT_URL
     credentials = [
-        ("user1", "password1"),
-        ("user2", "password2"),
-        ("user3", "password3"),
-        ("user4", "password4")
+        ("accesskey1", "secretkey1"),
+        ("accesskey2", "secretkey2")
     ]
-    filename = "urls.txt"  # File containing URLs, one per line
+    filename = "urls2.txt"  # File containing URLs, one per line
     urls = read_urls_from_file(filename)
     
     if urls:
         submitter = URLSubmitter(post_endpoint, credentials)
-        submitter.start_submission(urls)
-
+        submitter.start_submission(credentials.count, urls)
